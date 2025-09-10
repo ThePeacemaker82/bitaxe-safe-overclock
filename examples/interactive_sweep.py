@@ -32,29 +32,32 @@ def display_top_results(results, top_n=5):
               f"{result['temperature']:<6} {stable:<8}")
 
 def run_custom_sweep(overclock, voltage_range, frequency_range, test_duration):
-    """Esegue uno sweep personalizzato e restituisce i risultati"""
+    """Esegue uno sweep personalizzato frequency-first e restituisce i risultati"""
     results = []
     voltage_min, voltage_max, voltage_step = voltage_range
     freq_min, freq_max, freq_step = frequency_range
     
-    print(f"\n🚀 Avvio sweep personalizzato...")
+    print(f"\n🚀 Avvio sweep frequency-first...")
     print(f"📊 Range: {voltage_min}-{voltage_max}mV, {freq_min}-{freq_max}MHz")
     
-    total_tests = len(range(freq_min, freq_max + 1, freq_step)) * len(range(voltage_min, voltage_max + 1, voltage_step))
+    total_tests = len(range(voltage_min, voltage_max + 1, voltage_step)) * len(range(freq_min, freq_max + 1, freq_step))
     current_test = 0
     
-    for freq in range(freq_min, freq_max + 1, freq_step):
-        for voltage in range(voltage_min, voltage_max + 1, voltage_step):
+    # LOGICA CORRETTA: Prima voltaggio, poi frequenza (frequency-first)
+    for voltage in range(voltage_min, voltage_max + 1, voltage_step):
+        print(f"\n⚡ === Testando {voltage}mV - Sweep frequenze {freq_min}-{freq_max}MHz ===\")
+        
+        for freq in range(freq_min, freq_max + 1, freq_step):
             current_test += 1
-            print(f"\n⚡ Test {current_test}/{total_tests}: {freq}MHz @ {voltage}mV")
+            print(f"\n🎯 Test {current_test}/{total_tests}: {freq}MHz @ {voltage}mV\")
             
             # Applica le impostazioni
             if not overclock.apply_settings(freq, voltage):
-                print(f"❌ Errore applicazione {freq}MHz @ {voltage}mV")
+                print(f"❌ Errore applicazione {freq}MHz @ {voltage}mV\")
                 continue
             
             # Attendi stabilizzazione
-            print(f"⏱️ Attesa stabilizzazione {SAFETY_CONFIG['settle_time']}s...")
+            print(f"⏱️ Attesa stabilizzazione {SAFETY_CONFIG['settle_time']}s...\")
             time.sleep(SAFETY_CONFIG['settle_time'])
             
             # Test di stabilità
@@ -78,10 +81,15 @@ def run_custom_sweep(overclock, voltage_range, frequency_range, test_duration):
                 
                 results.append(result)
                 
-                status = "✅ Stabile" if stable else "❌ Instabile"
-                print(f"📈 Risultato: {mean_hashrate:.2f} GH/s, {state.temperature:.1f}°C, {efficiency:.2f} GH/J - {status}")
+                status = \"✅ Stabile\" if stable else \"❌ Instabile\"
+                print(f\"📈 Risultato: {mean_hashrate:.2f} GH/s, {state.temperature:.1f}°C, {efficiency:.2f} GH/J - {status}\")
+                
+                # Se stabile, continua con frequenza successiva
+                # Se instabile, probabilmente le frequenze successive falliranno anche
+                if not stable:
+                    print(f\"⚠️ {freq}MHz instabile @ {voltage}mV - frequenze superiori probabilmente falliranno\")
             else:
-                print("❌ Errore lettura stato")
+                print(\"❌ Errore lettura stato\")
     
     return results
 
