@@ -33,7 +33,7 @@ pip install -r requirements.txt
 ### Basic Usage
 ```bash
 # Run full optimization sweep
-python src/bitaxe_safe_overclock.py
+python3 src/bitaxe_safe_overclock.py
 
 # Apply best settings from previous results
 python3 apply_best_from_csv.py bitaxe_safe_tuning_results_YYYYMMDD_HHMMSS.csv
