@@ -41,7 +41,7 @@ SAFETY_CONFIG = {
     'cv_start': 1100,
     'cv_end': 1200,
     'cv_step': 25,
-    'cv_danger_threshold': 1150,  # Soglia di tensione pericolosa aggiunta
+    'cv_danger_threshold': 1150,
     'freq_start': 600,
     'freq_end': 750,
     'freq_step': 25,
@@ -49,7 +49,19 @@ SAFETY_CONFIG = {
     'stability_samples': 10,
     'stability_interval': 30,
     'min_hashrate_threshold': 10.0,
-    'max_cv_variation': 0.10  # Coefficiente di variazione massimo per stabilità (aumentato al 10%)
+    'max_cv_variation': 0.10,
+    # Controllo ventola automatico
+    'fan_control_enabled': True,
+    'fan_temp_threshold_66': 66.0,  # Temperatura per ventola al 100%
+    'fan_temp_threshold_60': 60.0,  # Temperatura per ventola al 80%
+    'fan_temp_threshold_55': 55.0,  # Temperatura per ventola al 60%
+    'fan_temp_threshold_50': 50.0,  # Temperatura per ventola al 40%
+    'fan_speed_max': 100,           # Velocità massima (100%)
+    'fan_speed_high': 80,           # Velocità alta (80%)
+    'fan_speed_medium': 60,         # Velocità media (60%)
+    'fan_speed_low': 40,            # Velocità bassa (40%)
+    'fan_speed_min': 25,            # Velocità minima (25%)
+    'fan_hysteresis': 2.0           # Isteresi per evitare oscillazioni
 }
 
 # Logging configuration
@@ -301,66 +313,58 @@ class BitAxeSafeOverclock:
         return True
         
     def test_stability(self, frequency: int, core_voltage: int) -> Tuple[bool, List[float], float]:
-        """Test stability with emergency stop checks"""
+        """Test stability with automatic fan control"""
         self.logger.info(f"Testing stability: {frequency}MHz @ {core_voltage}mV")
         
-        # Settle time with emergency stop checks
-        settle_time = SAFETY_CONFIG["settle_time"]
-        self.logger.info(f"Settling for {settle_time} seconds...")
-        
-        for i in range(settle_time):
-            if self.emergency_stop:
-                self.logger.info("Emergency stop during settle time")
-                return False, [], 0.0
-            time.sleep(1)
-        
         hashrates = []
-        samples = SAFETY_CONFIG["stability_samples"]
-        interval = SAFETY_CONFIG["stability_interval"]
+        start_time = time.time()
         
-        for i in range(samples):
+        # Initial settle time
+        self.logger.info(f"Settling for {SAFETY_CONFIG['settle_time']} seconds...")
+        time.sleep(SAFETY_CONFIG['settle_time'])
+        
+        # Collect stability samples
+        for i in range(SAFETY_CONFIG['stability_samples']):
             if self.emergency_stop:
-                self.logger.info(f"Emergency stop during stability test (sample {i+1}/{samples})")
-                return False, hashrates, 0.0
+                break
                 
+            # Get current state
             state = self.get_current_state()
             if not state:
-                self.logger.error(f"Failed to get state for sample {i+1}")
+                self.logger.error("Failed to get miner state during stability test")
                 continue
-                
-            hashrates.append(state.hash_rate)  # Cambiato da state.hashrate
-            self.logger.info(f"Sample {i+1}/{samples}: {state.hash_rate:.1f} GH/s, {state.temperature:.1f}°C")  # Cambiato da state.hashrate
+            
+            # Gestione automatica ventola
+            self.manage_fan_control(state)
             
             # Safety check
             if not self.check_safety_limits(state):
-                raise SafetyException(f"Safety limits exceeded during stability test")
+                self.logger.error("Safety limits exceeded during stability test")
+                return False, hashrates, 0.0
             
-            # Sleep with emergency stop checks
-            if i < samples - 1:  # Don't sleep after last sample
-                for j in range(interval):
-                    if self.emergency_stop:
-                        self.logger.info(f"Emergency stop during interval wait")
-                        return False, hashrates, 0.0
-                    time.sleep(1)
+            hashrates.append(state.hash_rate)
+            self.logger.info(f"Sample {i+1}/{SAFETY_CONFIG['stability_samples']}: {state.hash_rate:.1f} GH/s, {state.temperature:.1f}°C")
+            
+            # Wait between samples (except for last sample)
+            if i < SAFETY_CONFIG['stability_samples'] - 1:
+                time.sleep(SAFETY_CONFIG['stability_interval'])
         
-        if not hashrates:
-            return False, [], 0.0
-            
+        # Calculate statistics
+        if len(hashrates) < 2:
+            self.logger.error("Insufficient samples for stability analysis")
+            return False, hashrates, 0.0
+        
         mean_hashrate = statistics.mean(hashrates)
+        cv = statistics.stdev(hashrates) / mean_hashrate if mean_hashrate > 0 else float('inf')
         
-        # Check minimum hashrate threshold
-        if mean_hashrate < SAFETY_CONFIG["min_hashrate_threshold"]:
-            self.logger.warning(f"Hashrate too low: {mean_hashrate:.1f} < {SAFETY_CONFIG['min_hashrate_threshold']} GH/s")
-            return False, hashrates, mean_hashrate
+        # Check stability criteria
+        is_stable = (
+            cv <= SAFETY_CONFIG['max_cv_variation'] and
+            mean_hashrate >= SAFETY_CONFIG['min_hashrate_threshold']
+        )
         
-        # Calculate coefficient of variation
-        if len(hashrates) > 1:
-            cv = statistics.stdev(hashrates) / mean_hashrate
-            stable = cv <= SAFETY_CONFIG["max_cv_variation"]
-            self.logger.info(f"Stability test: CV = {cv:.3f} ({'STABLE' if stable else 'UNSTABLE'})")
-            return stable, hashrates, mean_hashrate
-        else:
-            return True, hashrates, mean_hashrate
+        self.logger.info(f"Stability test completed: CV={cv:.4f}, Mean={mean_hashrate:.1f} GH/s, Stable={is_stable}")
+        return is_stable, hashrates, mean_hashrate
         
     def require_user_confirmation(self, message: str) -> bool:
         """Require user confirmation for dangerous operations"""
@@ -455,8 +459,8 @@ class BitAxeSafeOverclock:
         return success
 
     def run_overclock_sweep(self):
-        """Optimized overclocking sweep - finds minimum voltage for each frequency"""
-        self.logger.info("Starting optimized BitAxe overclock sweep (frequency-first)")
+        """Optimized overclocking sweep - maintains voltage and increases frequency until instability"""
+        self.logger.info("Starting optimized BitAxe overclock sweep (progressive frequency-voltage)")
         
         # Validation phase
         if not self.validate_configuration():
@@ -469,80 +473,205 @@ class BitAxeSafeOverclock:
             return False
             
         try:
-            # Optimized sweep loop - FREQUENCY FIRST
-            for freq in range(SAFETY_CONFIG["freq_start"], SAFETY_CONFIG["freq_end"] + 1, SAFETY_CONFIG["freq_step"]):
+            # Start with minimum frequency and find stable voltage
+            current_freq = SAFETY_CONFIG["freq_start"]
+            current_voltage = None
+            
+            self.logger.info(f"\n🎯 === Finding initial stable configuration at {current_freq}MHz ===")
+            
+            # Find minimum stable voltage for starting frequency
+            for cv in range(SAFETY_CONFIG["cv_start"], SAFETY_CONFIG["cv_end"] + 1, SAFETY_CONFIG["cv_step"]):
                 if self.emergency_stop:
                     break
                     
-                self.logger.info(f"\n🎯 === Finding minimum voltage for {freq}MHz ===")
-                voltage_found = False
-                
-                # Test voltages from lowest to highest for this frequency
-                for cv in range(SAFETY_CONFIG["cv_start"], SAFETY_CONFIG["cv_end"] + 1, SAFETY_CONFIG["cv_step"]):
-                    if self.emergency_stop:
+                # Require confirmation for dangerous voltages
+                if cv >= SAFETY_CONFIG["cv_danger_threshold"]:
+                    if not self.require_user_confirmation(
+                        f"About to test potentially dangerous voltage: {cv}mV at {current_freq}MHz"):
+                        self.logger.info("User declined dangerous voltage test")
                         break
                         
-                    # Require confirmation for dangerous voltages
-                    if cv >= SAFETY_CONFIG["cv_danger_threshold"]:
-                        if not self.require_user_confirmation(
-                            f"About to test potentially dangerous voltage: {cv}mV at {freq}MHz"):
-                            self.logger.info("User declined dangerous voltage test")
+                self.logger.info(f"Testing {current_freq}MHz @ {cv}mV")
+                
+                # Apply settings
+                if not self.apply_settings(current_freq, cv):
+                    self.logger.error("Failed to apply settings, skipping")
+                    continue
+                    
+                # Test stability
+                stable, hashrates, mean_hashrate = self.test_stability(current_freq, cv)
+                
+                # Get final state
+                final_state = self.get_current_state()
+                if not final_state:
+                    self.logger.error("Failed to get final state")
+                    continue
+                    
+                # Calculate coefficient of variation
+                cv_value = 0.0
+                if len(hashrates) > 1 and mean_hashrate > 0:
+                    cv_value = statistics.stdev(hashrates) / mean_hashrate
+                    
+                # Record results
+                result = {
+                    'timestamp': final_state.timestamp.isoformat(),
+                    'frequency_mhz': current_freq,
+                    'core_voltage_mv': cv,
+                    'hashrate_ghs': mean_hashrate,
+                    'temperature_c': final_state.temperature,
+                    'power_w': final_state.power,
+                    'stable': stable,
+                    'cv': cv_value,
+                    'notes': f'initial_stable_voltage' if stable else 'unstable'
+                }
+                
+                self.results.append(result)
+                
+                # Safety check after each test
+                if not self.check_safety_limits(final_state):
+                    self.logger.error("Safety limits exceeded, stopping sweep")
+                    self.emergency_stop = True
+                    break
+                
+                # If stable, we found our starting point
+                if stable:
+                    current_voltage = cv
+                    self.logger.info(f"✅ INITIAL STABLE CONFIG: {current_freq}MHz @ {cv}mV - {mean_hashrate:.1f} GH/s")
+                    break
+                else:
+                    self.logger.info(f"❌ UNSTABLE: {current_freq}MHz @ {cv}mV - trying higher voltage")
+            
+            # If no stable voltage found at starting frequency, abort
+            if current_voltage is None:
+                self.logger.error(f"No stable voltage found at starting frequency {current_freq}MHz")
+                return False
+            
+            # Now progressively increase frequency while maintaining voltage
+            self.logger.info(f"\n🚀 === Progressive frequency increase from {current_freq}MHz @ {current_voltage}mV ===")
+            
+            for freq in range(current_freq + SAFETY_CONFIG["freq_step"], SAFETY_CONFIG["freq_end"] + 1, SAFETY_CONFIG["freq_step"]):
+                if self.emergency_stop:
+                    break
+                    
+                self.logger.info(f"\n🎯 Testing {freq}MHz @ {current_voltage}mV (maintaining voltage)")
+                
+                # Apply settings with current voltage
+                if not self.apply_settings(freq, current_voltage):
+                    self.logger.error("Failed to apply settings, skipping")
+                    continue
+                    
+                # Test stability
+                stable, hashrates, mean_hashrate = self.test_stability(freq, current_voltage)
+                
+                # Get final state
+                final_state = self.get_current_state()
+                if not final_state:
+                    self.logger.error("Failed to get final state")
+                    continue
+                    
+                # Calculate coefficient of variation
+                cv_value = 0.0
+                if len(hashrates) > 1 and mean_hashrate > 0:
+                    cv_value = statistics.stdev(hashrates) / mean_hashrate
+                    
+                # Record results
+                result = {
+                    'timestamp': final_state.timestamp.isoformat(),
+                    'frequency_mhz': freq,
+                    'core_voltage_mv': current_voltage,
+                    'hashrate_ghs': mean_hashrate,
+                    'temperature_c': final_state.temperature,
+                    'power_w': final_state.power,
+                    'stable': stable,
+                    'cv': cv_value,
+                    'notes': f'progressive_freq_test' if stable else 'freq_limit_reached'
+                }
+                
+                self.results.append(result)
+                
+                # Safety check after each test
+                if not self.check_safety_limits(final_state):
+                    self.logger.error("Safety limits exceeded, stopping sweep")
+                    self.emergency_stop = True
+                    break
+                
+                if stable:
+                    self.logger.info(f"✅ STABLE: {freq}MHz @ {current_voltage}mV - {mean_hashrate:.1f} GH/s, {final_state.temperature:.1f}°C")
+                    current_freq = freq  # Update current stable frequency
+                else:
+                    self.logger.info(f"❌ UNSTABLE: {freq}MHz @ {current_voltage}mV - frequency limit reached")
+                    self.logger.info(f"🎯 MAXIMUM STABLE FREQUENCY: {current_freq}MHz @ {current_voltage}mV")
+                    
+                    # Try to find higher voltage for this frequency
+                    self.logger.info(f"\n🔋 Trying higher voltages for {freq}MHz...")
+                    voltage_found = False
+                    
+                    for cv in range(current_voltage + SAFETY_CONFIG["cv_step"], SAFETY_CONFIG["cv_end"] + 1, SAFETY_CONFIG["cv_step"]):
+                        if self.emergency_stop:
                             break
                             
-                    self.logger.info(f"Testing {freq}MHz @ {cv}mV")
-                    
-                    # Apply settings
-                    if not self.apply_settings(freq, cv):
-                        self.logger.error("Failed to apply settings, skipping")
-                        continue
+                        # Require confirmation for dangerous voltages
+                        if cv >= SAFETY_CONFIG["cv_danger_threshold"]:
+                            if not self.require_user_confirmation(
+                                f"About to test potentially dangerous voltage: {cv}mV at {freq}MHz"):
+                                self.logger.info("User declined dangerous voltage test")
+                                break
+                                
+                        self.logger.info(f"Testing {freq}MHz @ {cv}mV")
                         
-                    # Test stability
-                    stable, hashrates, mean_hashrate = self.test_stability(freq, cv)
-                    
-                    # Get final state
-                    final_state = self.get_current_state()
-                    if not final_state:
-                        self.logger.error("Failed to get final state")
-                        continue
+                        # Apply settings
+                        if not self.apply_settings(freq, cv):
+                            self.logger.error("Failed to apply settings, skipping")
+                            continue
+                            
+                        # Test stability
+                        stable_hv, hashrates_hv, mean_hashrate_hv = self.test_stability(freq, cv)
                         
-                    # Calculate coefficient of variation
-                    cv_value = 0.0
-                    if len(hashrates) > 1 and mean_hashrate > 0:
-                        cv_value = statistics.stdev(hashrates) / mean_hashrate
+                        # Get final state
+                        final_state_hv = self.get_current_state()
+                        if not final_state_hv:
+                            self.logger.error("Failed to get final state")
+                            continue
+                            
+                        # Calculate coefficient of variation
+                        cv_value_hv = 0.0
+                        if len(hashrates_hv) > 1 and mean_hashrate_hv > 0:
+                            cv_value_hv = statistics.stdev(hashrates_hv) / mean_hashrate_hv
+                            
+                        # Record results
+                        result_hv = {
+                            'timestamp': final_state_hv.timestamp.isoformat(),
+                            'frequency_mhz': freq,
+                            'core_voltage_mv': cv,
+                            'hashrate_ghs': mean_hashrate_hv,
+                            'temperature_c': final_state_hv.temperature,
+                            'power_w': final_state_hv.power,
+                            'stable': stable_hv,
+                            'cv': cv_value_hv,
+                            'notes': f'higher_voltage_test' if stable_hv else 'voltage_limit_reached'
+                        }
                         
-                    # Record results
-                    result = {
-                        'timestamp': final_state.timestamp.isoformat(),
-                        'frequency_mhz': freq,
-                        'core_voltage_mv': cv,
-                        'hashrate_ghs': mean_hashrate,
-                        'temperature_c': final_state.temperature,
-                        'power_w': final_state.power,
-                        'stable': stable,
-                        'cv': cv_value,
-                        'notes': f'stable_min_voltage' if stable else 'unstable'
-                    }
+                        self.results.append(result_hv)
+                        
+                        # Safety check
+                        if not self.check_safety_limits(final_state_hv):
+                            self.logger.error("Safety limits exceeded, stopping sweep")
+                            self.emergency_stop = True
+                            break
+                        
+                        if stable_hv:
+                            self.logger.info(f"✅ STABLE with higher voltage: {freq}MHz @ {cv}mV - {mean_hashrate_hv:.1f} GH/s")
+                            current_voltage = cv
+                            current_freq = freq
+                            voltage_found = True
+                            break
+                        else:
+                            self.logger.info(f"❌ UNSTABLE: {freq}MHz @ {cv}mV - trying higher voltage")
                     
-                    self.results.append(result)
-                    
-                    # Log result
-                    if stable:
-                        self.logger.info(f"✅ SUCCESS: {freq}MHz stable at {cv}mV - {mean_hashrate:.1f} GH/s, {final_state.temperature:.1f}°C")
-                        self.logger.info(f"🎯 MINIMUM VOLTAGE FOUND for {freq}MHz: {cv}mV")
-                        voltage_found = True
-                        break  # Found minimum voltage, move to next frequency
-                    else:
-                        self.logger.info(f"❌ UNSTABLE: {freq}MHz @ {cv}mV - {mean_hashrate:.1f} GH/s, trying higher voltage")
-                    
-                    # Safety check after each test
-                    if not self.check_safety_limits(final_state):
-                        self.logger.error("Safety limits exceeded, stopping sweep")
-                        self.emergency_stop = True
+                    if not voltage_found:
+                        self.logger.info(f"🏁 FINAL RESULT: Maximum stable configuration is {current_freq}MHz @ {current_voltage}mV")
                         break
                         
-                if not voltage_found and not self.emergency_stop:
-                    self.logger.warning(f"⚠️  No stable voltage found for {freq}MHz within safe limits")
-                    
         except SafetyException as e:
             self.logger.critical(f"Safety exception: {e}")
             self.emergency_shutdown()
@@ -586,6 +715,83 @@ class BitAxeSafeOverclock:
                 
         return True
         
+    def get_optimal_fan_speed(self, temperature: float, current_fan_speed: int = None) -> int:
+        """Calcola la velocità ottimale della ventola basata sulla temperatura"""
+        if not SAFETY_CONFIG['fan_control_enabled']:
+            return current_fan_speed if current_fan_speed else SAFETY_CONFIG['fan_speed_medium']
+        
+        hysteresis = SAFETY_CONFIG['fan_hysteresis']
+        
+        # Se la temperatura è >= 66°C, ventola al 100%
+        if temperature >= SAFETY_CONFIG['fan_temp_threshold_66']:
+            return SAFETY_CONFIG['fan_speed_max']
+        
+        # Logica con isteresi per evitare oscillazioni
+        if current_fan_speed:
+            # Se la ventola è già al massimo, mantienila fino a temperatura < 64°C
+            if current_fan_speed >= SAFETY_CONFIG['fan_speed_max'] and temperature >= (SAFETY_CONFIG['fan_temp_threshold_66'] - hysteresis):
+                return SAFETY_CONFIG['fan_speed_max']
+            
+            # Se la ventola è alta, mantienila fino a temperatura < 58°C
+            if current_fan_speed >= SAFETY_CONFIG['fan_speed_high'] and temperature >= (SAFETY_CONFIG['fan_temp_threshold_60'] - hysteresis):
+                return SAFETY_CONFIG['fan_speed_high']
+            
+            # Se la ventola è media, mantienila fino a temperatura < 53°C
+            if current_fan_speed >= SAFETY_CONFIG['fan_speed_medium'] and temperature >= (SAFETY_CONFIG['fan_temp_threshold_55'] - hysteresis):
+                return SAFETY_CONFIG['fan_speed_medium']
+        
+        # Logica normale per impostare la velocità
+        if temperature >= SAFETY_CONFIG['fan_temp_threshold_60']:
+            return SAFETY_CONFIG['fan_speed_high']
+        elif temperature >= SAFETY_CONFIG['fan_temp_threshold_55']:
+            return SAFETY_CONFIG['fan_speed_medium']
+        elif temperature >= SAFETY_CONFIG['fan_temp_threshold_50']:
+            return SAFETY_CONFIG['fan_speed_low']
+        else:
+            return SAFETY_CONFIG['fan_speed_min']
+    
+    def set_fan_speed(self, fan_speed: int) -> bool:
+        """Imposta la velocità della ventola tramite API"""
+        try:
+            data = {"fanspeed": fan_speed}
+            response = self.make_api_request("/api/system", method="PATCH", data=data)
+            
+            if response is not None:  # PATCH può restituire None ma essere comunque riuscito
+                self.logger.info(f"🌀 Velocità ventola impostata a {fan_speed}%")
+                return True
+            else:
+                self.logger.warning(f"⚠️ Risposta vuota dall'API per impostazione ventola a {fan_speed}%")
+                return True  # Consideriamo comunque riuscito se non ci sono errori
+                
+        except Exception as e:
+            self.logger.error(f"❌ Errore nell'impostazione velocità ventola: {e}")
+            return False
+    
+    def manage_fan_control(self, current_state: MinerState) -> bool:
+        """Gestisce il controllo automatico della ventola basato sulla temperatura"""
+        if not SAFETY_CONFIG['fan_control_enabled']:
+            return True
+        
+        try:
+            # Ottieni informazioni correnti per la velocità ventola attuale
+            system_info = self.make_api_request("/api/system/info")
+            current_fan_speed = system_info.get('fanspeed', SAFETY_CONFIG['fan_speed_medium']) if system_info else None
+            
+            # Calcola velocità ottimale
+            optimal_speed = self.get_optimal_fan_speed(current_state.temperature, current_fan_speed)
+            
+            # Imposta solo se diversa da quella attuale
+            if current_fan_speed != optimal_speed:
+                self.logger.info(f"🌡️ Temperatura: {current_state.temperature:.1f}°C - Cambio ventola da {current_fan_speed}% a {optimal_speed}%")
+                return self.set_fan_speed(optimal_speed)
+            else:
+                self.logger.debug(f"🌡️ Temperatura: {current_state.temperature:.1f}°C - Ventola già a {current_fan_speed}% (ottimale)")
+                return True
+                
+        except Exception as e:
+            self.logger.error(f"❌ Errore nella gestione controllo ventola: {e}")
+            return False
+
 def main():
     """Main entry point"""
     print("BitAxe Safe Overclock Script")

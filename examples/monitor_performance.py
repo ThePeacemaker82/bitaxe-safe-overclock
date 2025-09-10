@@ -16,7 +16,8 @@ from datetime import datetime
 
 class PerformanceMonitor:
     def __init__(self, miner_ip, log_file=None):
-        self.overclock = BitAxeSafeOverclock(miner_ip)
+        self.miner_ip = miner_ip  # Salviamo l'IP per riferimento
+        self.overclock = BitAxeSafeOverclock()  # Rimuovo il parametro miner_ip
         self.running = True
         self.log_file = log_file or f"performance_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
