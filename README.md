@@ -71,6 +71,11 @@ python3 apply_best_from_csv.py your_results_file.csv
 ## 🤝 **Contributing**
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to this project.
+If this tool has been useful for you, please consider donating to support further development ₿️ address:  bc1qfmj8f8czygqpw8yswkj75te942hgz5f8lxmlcy
+
+Any amount is appreciated, as it helps fund further development and maintenance of this project.
+
+Thank you!
 
 ## 📄 **License**
 
