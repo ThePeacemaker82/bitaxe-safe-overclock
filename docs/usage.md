@@ -19,6 +19,19 @@ Choose a safety profile in `config/safety_config.json`:
 
 ### 3. Basic Usage
 ```bash
+# Run optimization sweep
+python src/bitaxe_safe_overclock.py
+
+# Apply best settings from previous results
+python3 apply_best_from_csv.py bitaxe_safe_tuning_results_YYYYMMDD_HHMMSS.csv
+```
+
+## 🎯 Optimal Settings Application
+
+### During Sweep Completion
+After the optimization sweep completes, you'll see:
+
+```bash
 python src/bitaxe_safe_overclock.py
 ```
 

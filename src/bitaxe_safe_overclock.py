@@ -387,7 +387,69 @@ class BitAxeSafeOverclock:
                 writer.writerow(result)
                 
         self.logger.info(f"Results saved to {filename}")
+        return filename  # Return filename for apply_best_settings
+
+    def find_best_settings(self) -> Optional[Dict]:
+        """Find the best stable settings from results"""
+        if not self.results:
+            self.logger.error("No results available to analyze")
+            return None
+            
+        # Filter only stable results
+        stable_results = [r for r in self.results if r['stable']]
         
+        if not stable_results:
+            self.logger.error("No stable results found")
+            return None
+            
+        # Find best result based on highest hashrate
+        best_result = max(stable_results, key=lambda x: x['hashrate_ghs'])
+        
+        self.logger.info(f"Best settings found: {best_result['frequency_mhz']}MHz @ {best_result['core_voltage_mv']}mV")
+        self.logger.info(f"Performance: {best_result['hashrate_ghs']:.1f} GH/s, {best_result['temperature_c']:.1f}°C")
+        
+        return {
+            'frequency': best_result['frequency_mhz'],
+            'core_voltage': best_result['core_voltage_mv'],
+            'hashrate': best_result['hashrate_ghs'],
+            'temperature': best_result['temperature_c']
+        }
+
+    def apply_best_settings(self) -> bool:
+        """Apply the best settings found during sweep"""
+        best_settings = self.find_best_settings()
+        
+        if not best_settings:
+            self.logger.error("Cannot apply best settings - no optimal configuration found")
+            return False
+            
+        self.logger.info("🎯 Applying best settings found during sweep...")
+        
+        # Ask for user confirmation
+        message = f"Apply best settings: {best_settings['frequency']}MHz @ {best_settings['core_voltage']}mV?\n"
+        message += f"Expected performance: {best_settings['hashrate']:.1f} GH/s @ {best_settings['temperature']:.1f}°C"
+        
+        if not self.require_user_confirmation(message):
+            self.logger.info("User cancelled applying best settings")
+            return False
+            
+        # Apply the settings
+        success = self.apply_settings(best_settings['frequency'], best_settings['core_voltage'])
+        
+        if success:
+            self.logger.info("✅ Best settings applied successfully!")
+            self.logger.info(f"New settings: {best_settings['frequency']}MHz @ {best_settings['core_voltage']}mV")
+            
+            # Verify the settings are working
+            time.sleep(30)  # Wait for stabilization
+            current_state = self.get_current_state()
+            if current_state:
+                self.logger.info(f"Current performance: {current_state.hashrate:.1f} GH/s @ {current_state.temperature:.1f}°C")
+        else:
+            self.logger.error("❌ Failed to apply best settings")
+            
+        return success
+
     def run_overclock_sweep(self):
         """Optimized overclocking sweep - finds minimum voltage for each frequency"""
         self.logger.info("Starting optimized BitAxe overclock sweep (frequency-first)")
@@ -490,9 +552,24 @@ class BitAxeSafeOverclock:
             
             if self.emergency_stop:
                 self.logger.info("🛑 Emergency stop detected - restoring settings immediately")
+                self.restore_original_settings()
+            else:
+                # Ask user if they want to apply best settings or restore original
+                print("\n🎯 Sweep completed successfully!")
+                print("Choose an option:")
+                print("1. Apply best settings found")
+                print("2. Restore original settings")
+                
+                choice = input("Enter your choice (1 or 2): ").strip()
+                
+                if choice == "1":
+                    if not self.apply_best_settings():
+                        self.logger.info("Falling back to original settings...")
+                        self.restore_original_settings()
+                else:
+                    self.restore_original_settings()
             
-            self.restore_original_settings()
-            self.save_results()
+            filename = self.save_results()
             
             if self.emergency_stop:
                 self.logger.info("✅ Emergency shutdown completed safely")
@@ -501,6 +578,7 @@ class BitAxeSafeOverclock:
             else:
                 self.logger.info("🎉 Optimized sweep completed successfully!")
                 self.logger.info("📊 Results show MINIMUM VOLTAGE for each frequency")
+                print(f"\n📊 Results saved to: {filename}")
                 
         return True
         
