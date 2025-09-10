@@ -41,6 +41,7 @@ SAFETY_CONFIG = {
     'cv_start': 1100,
     'cv_end': 1200,
     'cv_step': 25,
+    'cv_danger_threshold': 1150,  # Soglia di tensione pericolosa aggiunta
     'freq_start': 600,
     'freq_end': 750,
     'freq_step': 25,
@@ -477,7 +478,7 @@ class BitAxeSafeOverclock:
                 voltage_found = False
                 
                 # Test voltages from lowest to highest for this frequency
-                for cv in range(SAFETY_CONFIG["cv_start"], SAFETY_CONFIG["cv_max"] + 1, SAFETY_CONFIG["cv_step"]):
+                for cv in range(SAFETY_CONFIG["cv_start"], SAFETY_CONFIG["cv_end"] + 1, SAFETY_CONFIG["cv_step"]):
                     if self.emergency_stop:
                         break
                         
