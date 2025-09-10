@@ -1,0 +1,33 @@
+{
+  "safety_profiles": {
+    "conservative": {
+      "max_temp_critical": 55,
+      "cv_max": 1200,
+      "freq_end": 600
+    },
+    "moderate": {
+      "max_temp_critical": 60,
+      "cv_max": 1300,
+      "freq_end": 650
+    },
+    "aggressive": {
+      "max_temp_critical": 65,
+      "cv_max": 1400,
+      "freq_end": 700
+    }
+  },
+  "hardware_profiles": {
+    "gamma_601": {
+      "recommended_cv_max": 1300,
+      "recommended_freq_max": 650
+    },
+    "supra": {
+      "recommended_cv_max": 1250,
+      "recommended_freq_max": 600
+    },
+    "ultra": {
+      "recommended_cv_max": 1200,
+      "recommended_freq_max": 550
+    }
+  }
+}
