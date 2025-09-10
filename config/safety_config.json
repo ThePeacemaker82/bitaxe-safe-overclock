@@ -11,7 +11,7 @@
       "freq_end": 650
     },
     "aggressive": {
-      "max_temp_critical": 65,
+      "max_temp_critical": 70,
       "cv_max": 1400,
       "freq_end": 700
     }

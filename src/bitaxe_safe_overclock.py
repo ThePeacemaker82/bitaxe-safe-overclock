@@ -34,13 +34,15 @@ SAFETY_CONFIG = {
     
     # Voltage limits (mV) - Conservative for Gamma 601
     "cv_start": 1100,            # Starting core voltage
-    "cv_max": 1300,              # Maximum safe voltage
+    "cv_max": 1400,              # Maximum safe voltage (aumentato per 700MHz)
     "cv_step": 25,               # Voltage increment
-    "cv_danger_threshold": 1250, # Requires confirmation above this
+    "cv_danger_threshold": 1300, # Requires confirmation above this
     
-    # Frequency limits (MHz)
+    # 🎯 Per Raggiungere 700MHz:
+    
+    ### 1. Prima modifica i limiti (se non l'hai già fatto):
     "freq_start": 525,           # Starting frequency (stock frequency)
-    "freq_end": 650,             # Maximum frequency
+    "freq_end": 700,             # Maximum frequency (cambiato da 650 a 700)
     "freq_step": 25,             # Frequency increment
     
     # Stability and timing
