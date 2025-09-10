@@ -27,34 +27,28 @@ MINER_IP = "192.168.1.97"  # Example: "192.168.1.100"
 
 # Safety Limits (CONSERVATIVE DEFAULTS)
 SAFETY_CONFIG = {
-    # Temperature limits (Celsius) - Updated based on community data
-    "max_temp_warning": 65,      # Warning threshold (was 55)
-    "max_temp_critical": 70,     # Emergency shutdown (was 60) 
-    "max_temp_absolute": 75,     # Absolute maximum (was 65)
-    
-    # Voltage limits (mV) - Conservative for Gamma 601
-    "cv_start": 1100,            # Starting core voltage
-    "cv_max": 1400,              # Maximum safe voltage (aumentato per 700MHz)
-    "cv_step": 25,               # Voltage increment
-    "cv_danger_threshold": 1300, # Requires confirmation above this
-    
-    # 🎯 Per Raggiungere 700MHz:
-    
-    ### 1. Prima modifica i limiti (se non l'hai già fatto):
-    "freq_start": 525,           # Starting frequency (stock frequency)
-    "freq_end": 700,             # Maximum frequency (cambiato da 650 a 700)
-    "freq_step": 25,             # Frequency increment
-    
-    # Stability and timing
-    "stability_samples": 10,     # Samples for stability check
-    "stability_interval": 30,    # Seconds between samples
-    "settle_time": 60,           # Seconds to settle after change
-    "max_cv_variation": 0.15,    # Maximum coefficient of variation
-    "min_hashrate_threshold": 50, # Minimum acceptable hashrate (GH/s)
-    
-    # Safety delays
-    "emergency_cooldown": 300,   # Cooldown after emergency stop
-    "confirmation_timeout": 30,  # Timeout for user confirmations
+    'max_temperature': 85,
+    'max_vr_temperature': 90,
+    'max_power': 40,
+    'min_efficiency': 25,
+    'max_voltage': 1200,
+    'min_voltage': 1000,
+    'max_frequency': 800,
+    'min_frequency': 400,
+    'stability_test_duration': 300,
+    'temperature_check_interval': 30,
+    'max_consecutive_failures': 3,
+    'cv_start': 1100,
+    'cv_end': 1200,
+    'cv_step': 25,
+    'freq_start': 600,
+    'freq_end': 750,
+    'freq_step': 25,
+    'settle_time': 5,
+    'stability_samples': 10,
+    'stability_interval': 30,
+    'min_hashrate_threshold': 10.0,
+    'max_cv_variation': 0.10  # Coefficiente di variazione massimo per stabilità (aumentato al 10%)
 }
 
 # Logging configuration
@@ -70,8 +64,20 @@ class MinerState:
     frequency: int
     core_voltage: int
     temperature: float
-    hashrate: float
+    vr_temperature: float
+    hash_rate: float
     power: float
+    shares_accepted: int
+    shares_rejected: int
+    uptime: int
+    timestamp: datetime = None
+    efficiency: float = 0.0
+    stable: bool = False
+    
+    def __post_init__(self):
+        if self.timestamp is None:
+            self.timestamp = datetime.now()
+        self.efficiency = self.hash_rate / self.power if self.power > 0 else 0
     timestamp: datetime
     stable: bool = False
     
@@ -81,6 +87,7 @@ class SafetyException(Exception):
 
 class BitAxeSafeOverclock:
     def __init__(self):
+        self.miner_ip = MINER_IP  # Aggiunto attributo mancante
         self.base_url = f"http://{MINER_IP}"
         self.original_settings = None
         self.emergency_stop = False
@@ -189,54 +196,48 @@ class BitAxeSafeOverclock:
                 
         return None
         
-    def get_current_state(self) -> Optional[MinerState]:
-        """Get current miner state with validation"""
-        system_info = self.make_api_request("/api/system/info")
-        if not system_info:
-            return None
-            
+    def get_current_state(self) -> MinerState:
+        """Ottiene lo stato attuale del miner"""
         try:
-            state = MinerState(
-                frequency=int(system_info.get('frequency', 0)),
-                core_voltage=int(system_info.get('coreVoltage', 0)),
-                temperature=float(system_info.get('temp', 0)),
-                hashrate=float(system_info.get('hashRate', 0)),
-                power=float(system_info.get('power', 0)),
-                timestamp=datetime.now()
+            response = requests.get(f"http://{self.miner_ip}/api/system/info", timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            return MinerState(
+                frequency=data.get('frequency', 0),
+                core_voltage=data.get('coreVoltage', 0),  # Corretto nome attributo
+                temperature=data.get('temp', 0),
+                vr_temperature=data.get('vrTemp', 0),
+                hash_rate=data.get('hashRate', 0),
+                power=data.get('power', 0),
+                efficiency=0,  # Calcolato in __post_init__
+                shares_accepted=data.get('sharesAccepted', 0),
+                shares_rejected=data.get('sharesRejected', 0),
+                uptime=data.get('uptimeSeconds', 0)
+                # timestamp viene impostato automaticamente in __post_init__
             )
-            
-            # Validate readings
-            if state.temperature <= 0 or state.temperature > 100:
-                raise SafetyException(f"Invalid temperature reading: {state.temperature}°C")
-                
-            if state.hashrate < 0:
-                raise SafetyException(f"Invalid hashrate reading: {state.hashrate}")
-                
-            return state
-            
-        except (ValueError, KeyError) as e:
-            self.logger.error(f"Error parsing miner state: {e}")
-            return None
-            
+        except Exception as e:
+            self.logger.error(f"Errore nel recupero stato: {e}")
+            raise
+        
     def check_safety_limits(self, state: MinerState) -> bool:
-        """Comprehensive safety limit checking"""
-        # Critical temperature check
-        if state.temperature >= SAFETY_CONFIG["max_temp_absolute"]:
-            raise SafetyException(f"CRITICAL: Temperature {state.temperature}°C exceeds absolute maximum!")
-            
-        # Emergency temperature check
-        if state.temperature >= SAFETY_CONFIG["max_temp_critical"]:
-            self.logger.error(f"EMERGENCY: Temperature {state.temperature}°C exceeds critical threshold!")
+        """Verifica che tutti i parametri siano entro i limiti di sicurezza"""
+        if state.temperature > SAFETY_CONFIG['max_temperature']:
+            self.logger.warning(f"Temperatura ASIC troppo alta: {state.temperature}°C")
             return False
-            
-        # Warning temperature check
-        if state.temperature >= SAFETY_CONFIG["max_temp_warning"]:
-            self.logger.warning(f"WARNING: Temperature {state.temperature}°C approaching limits")
-            
-        # Hashrate sanity check
-        if state.hashrate < SAFETY_CONFIG["min_hashrate_threshold"]:
-            self.logger.warning(f"Low hashrate detected: {state.hashrate} GH/s")
-            
+        
+        if state.vr_temperature > SAFETY_CONFIG['max_vr_temperature']:
+            self.logger.warning(f"Temperatura VR troppo alta: {state.vr_temperature}°C")
+            return False
+        
+        if state.power > SAFETY_CONFIG['max_power']:
+            self.logger.warning(f"Potenza troppo alta: {state.power}W")
+            return False
+        
+        if state.efficiency < SAFETY_CONFIG['min_efficiency']:
+            self.logger.warning(f"Efficienza troppo bassa: {state.efficiency} GH/W")
+            return False
+        
         return True
         
     def backup_original_settings(self) -> bool:
@@ -326,8 +327,8 @@ class BitAxeSafeOverclock:
                 self.logger.error(f"Failed to get state for sample {i+1}")
                 continue
                 
-            hashrates.append(state.hashrate)
-            self.logger.info(f"Sample {i+1}/{samples}: {state.hashrate:.1f} GH/s, {state.temperature:.1f}°C")
+            hashrates.append(state.hash_rate)  # Cambiato da state.hashrate
+            self.logger.info(f"Sample {i+1}/{samples}: {state.hash_rate:.1f} GH/s, {state.temperature:.1f}°C")  # Cambiato da state.hashrate
             
             # Safety check
             if not self.check_safety_limits(state):
@@ -446,7 +447,7 @@ class BitAxeSafeOverclock:
             time.sleep(30)  # Wait for stabilization
             current_state = self.get_current_state()
             if current_state:
-                self.logger.info(f"Current performance: {current_state.hashrate:.1f} GH/s @ {current_state.temperature:.1f}°C")
+                self.logger.info(f"Current performance: {current_state.hash_rate:.1f} GH/s @ {current_state.temperature:.1f}°C")
         else:
             self.logger.error("❌ Failed to apply best settings")
             

@@ -51,14 +51,14 @@ class PerformanceMonitor:
                     state = self.overclock.get_current_state()
                     
                     # Calcola efficienza
-                    efficiency = state.hashrate / state.power if state.power > 0 else 0
+                    efficiency = state.hash_rate / state.power if state.power > 0 else 0  # Cambiato da state.hashrate
                     
                     # Log dati
                     log_entry = {
                         'timestamp': datetime.now().isoformat(),
-                        'voltage': state.voltage,
+                        'voltage': state.core_voltage,  # Cambiato da state.voltage
                         'frequency': state.frequency,
-                        'hashrate': state.hashrate,
+                        'hashrate': state.hash_rate,  # Cambiato da state.hashrate
                         'temperature': state.temperature,
                         'power': state.power,
                         'efficiency': efficiency
@@ -69,9 +69,9 @@ class PerformanceMonitor:
                     
                     # Mostra stato corrente
                     print(f"⏰ {datetime.now().strftime('%H:%M:%S')} | "
-                          f"🔋 {state.voltage}mV | "
+                          f"🔋 {state.core_voltage}mV | "  # Cambiato da state.voltage
                           f"⚡ {state.frequency}MHz | "
-                          f"⛏️ {state.hashrate:.2f}GH/s | "
+                          f"⛏️ {state.hash_rate:.2f}GH/s | "  # Cambiato da state.hashrate
                           f"🌡️ {state.temperature}°C | "
                           f"💡 {state.power:.1f}W | "
                           f"📈 {efficiency:.2f}GH/J")
