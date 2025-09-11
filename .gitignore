@@ -42,3 +42,7 @@ Thumbs.db
 
 # Config (if contains sensitive data)
 config/local_config.json
+performance_log_20250911_102758.csv
+performance_log_20250910_223534.csv
+examples/pool_switcher.py
+performance_log_20250910_223534.csv
